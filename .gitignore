@@ -7,6 +7,9 @@ yarn-error.log*
 lerna-debug.log*
 
 codeWithExplanantion
+
+things_to do for_jeff_eye_project
+
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
