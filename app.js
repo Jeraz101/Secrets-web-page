@@ -1,11 +1,16 @@
 //jshint esversion:6
 
-require("dotenv").config() //download npm i dotenv in our jeff_eye_project and create .env file.open .env file and cut out our secret and paste it there. check .nv file to see how to do it.
+require("dotenv").config()
 const express = require("express"); //
 const bodyParser = require("body-parser");
 const ejs = require("ejs");
 const mongoose = require("mongoose");
-const encrypt = require("mongoose-encryption") //check to see if this is connected in our jeff_eye_project
+
+const session = require('express-session');
+const passport = require("passport");
+const passportLocalMongoose = require("passport-local-mongoose");
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const findOrCreate = require("mongoose-findorcreate");
 
 
 
@@ -14,34 +19,93 @@ const encrypt = require("mongoose-encryption") //check to see if this is connect
 const app = express();
 
 
-app.set('view engine', 'ejs'); //basically for ejs
+app.set('view engine', 'ejs');
 
-app.use(express.static("public"));/*when our browser makes a get request to our server.
-The bootstrap and the css disappears or not incoporated in it. to solve this we need to use a special function of express,
-known as app.use(express.static())*/
-app.use(bodyParser.urlencoded({extended:true}));//tells our server to use body-parser for post request
+app.use(express.static("public"));
+app.use(bodyParser.urlencoded({extended:true}));
+app.use(session({
+  secret: "Our little secret.",
+  resave: false,
+  saveUninitialized:false
 
-mongoose.connect("mongodb://localhost:27017/userDB",  {useUnifiedTopology: true, useNewUrlParser: true})
+}));
 
-const userSchema = new mongoose.Schema({ //https://www.npmjs.com/package/mongoose-encryption
+app.use(passport.initialize());
+app.use(passport.session());
+
+
+//mongoose.connect("mongodb://localhost:27017/userDB",  {useUnifiedTopology: true, useNewUrlParser: true});
+const mongoString = `mongodb+srv://${process.env.DB_USERNAME}:${process.env.DB_PASSWORD}@cluster0.lzeq8.mongodb.net/secretsDB?retryWrites=true&w=majority`
+
+mongoose.connect(mongoString, {useNewUrlParser: true, useUnifiedTopology: true });
+mongoose.set("useCreateIndex", true);
+
+mongoose.connection.on("error", function(error) {
+  console.log(error)
+})
+
+mongoose.connection.on("open", function() {
+  console.log("Connected to MongoDB database.")
+})
+
+
+
+
+const userSchema = new mongoose.Schema({
 
   email:String,
-  password: String
+  password: String,
+  googleId: String,
+  secret:String
 });
 
-//check to see if this is in our jeff_eye_project
+userSchema.plugin(findOrCreate);
+userSchema.plugin(passportLocalMongoose)
 
-userSchema.plugin(encrypt, {secret: process.env.SECRET,  encryptedFields: ["password"]});//this encrypts only the password field. if you exclude encryptedFields then it will encrpt the whole database.
+const User = new mongoose.model("User", userSchema);
+
+passport.use(User.createStrategy());
+
+passport.serializeUser(function(user, done){
+  done(null, user.id)
+});
+
+passport.deserializeUser(function(id, done){
+  User.findById(id, function(err, user){
+    done(err, user);
+  });
+});
 
 
-
-//create our model which is User and connect it to our collection which is user, and this will use the userSchema
-const User = new mongoose.model("User", userSchema); //check to see if this is connected in our jeff_eye_project
+passport.use(new GoogleStrategy({
+    clientID:process.env.CLIENT_ID,
+    clientSecret:process.env.CLIENT_SECRET,
+    callbackURL: "http://localhost:3000/auth/google/secrets",
+    userProfileURL:"https://www.googleapis.com/oauth2/v3/userinfo"
+  },
+  function(accessToken, refreshToken, profile, cb) {
+    console.log(profile);
+    User.findOrCreate({ googleId: profile.id }, function (err, user) {
+      return cb(err, user);
+    });
+  }
+));
 
 
 app.get("/", function(req, res){
   res.render("home")
 });
+
+app.get("/auth/google",
+  passport.authenticate("google", { scope: ["profile"] }));
+
+
+  app.get("/auth/google/secrets",
+    passport.authenticate('google', { failureRedirect: "/login" }),
+    function(req, res) {
+
+      res.redirect("/secrets");
+    });
 
 app.get("/login", function(req, res){
   res.render("login")
@@ -51,74 +115,103 @@ app.get("/register", function(req, res){
   res.render("register")
 });
 
+app.get("/secrets", function(req, res){
+  User.find({"secret": {$ne: null}}, function(err, foundUsers){
+
+    if(err){
+      console.log(err);
+    }else{
+      if(foundUsers){
+        res.render("secrets", {usersWithSecrets: foundUsers})
+      }
+    }
+  })
+});
+
+app.get("/submit", function(req, res){
+
+  if(req.isAuthenticated()){
+    res.render("submit")
+  }else{
+    res.redirect("/login")
+  }
+});
+  app.post("/submit", function(req, res){
+
+    const submittedSecret = req.body.secret;
+
+    console.log(req.user.id);
+
+    User.findById(req.user.id, function(err, founduser){
+      if(err){
+        console.log(err);;
+      }else{
+        if(founduser){
+          founduser.secret = submittedSecret;
+          founduser.save(function(){
+            res.redirect("/secrets");
+          });
+        }
+      }
+    });
+  });
+
+
+app.get("/logout", function(req, res){
+  req.logout();
+  res.redirect("/");
+});
+
+
 
 
 
 app.post("/register", function(req, res){
 
-  const newUser = new User({
-    email: req.body.username,
-    password: req.body.password
-  });
-
-  newUser.save(function(err){
+  User.register({username: req.body.username}, req.body.password, function(err, user){
     if(err){
       console.log(err);
+      res.redirect("/register");
     }else{
-      res.render("secrets");
+      passport.authenticate("local")(req, res, function(){
+        res.redirect("/secrets");
+      })
     }
   })
+
+
 })
 
 
 app.post("/login", function(req, res){
+  const user = new User({
+    username: req.body.username,
+    password: req.body.password
+  });
 
-const email = req.body.username;
-const password = req.body.password;
-
-User.findOne({email: email}, function(err, foundUser){
-
-  if(err){
-    console.log(err);
-  }else{
-    if(foundUser){
-      if(foundUser.password === password){
-        res.render("secrets")
-      }else{
-        res.send("wrong password")
-      }
+  req.login(user, function(err){
+    if(err){
+      console.log(err);
     }else{
-
-      res.send("wrong email")
+      passport.authenticate("local")(req, res, function(){
+        res.redirect("/secrets");
+      })
     }
-  }
-})
-
-})
-
-//level 1, adding only password
-//LEVEL 2 encrpyting our user passwords: Encrpytion
-
-
-//Things to do for jeff_eye_project
-/*create .gitignore
-check the gitignore in secrets, copy and paste in gitignore of jeff_eye_project
-*/
+  })
 
 
 
-
-
-
-app.listen(3000, function(){
-  console.log("server started at port 3000");
 })
 
 
-//Dot.env(https://www.npmjs.com/package/dotenv)
-//a file to save our important information, so it wont be shared online.
 
-/*Difference between res.render and res.sendFile
+let port = process.env.PORT;
+if(port == null || port == ""){
+  port = 3000;
+}
 
 
-res.render is used to render (or display) a template file (either html or ejs), while res.send can be used to give a feedback when a http request is made, the feedback may be in form of json or a simple text.*/
+app.listen(port || 3000, function() {
+
+  console.log("Server started on port 3000");
+});
